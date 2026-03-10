@@ -1,0 +1,64 @@
+############################
+# data / evaluation 产出
+############################
+
+# evaluation 中间结果
+evaluation/factor_panel_*.parquet
+evaluation/factor_eval_timeseries/
+evaluation/factor_qc/
+
+# figures / plots
+figures/
+evaluation/figures/
+
+# 通用大文件数据
+*.parquet
+*.csv
+*.feather
+*.npy
+*.npz
+
+
+############################
+# 模型训练产物
+############################
+
+checkpoints/
+logs/
+runs/
+
+
+############################
+# Python / cache
+############################
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+############################
+# 实验 & 临时文件
+############################
+
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+
+
+############################
+# IDE / 编辑器
+############################
+
+.vscode/
+.idea/
+
+
+############################
+# 系统文件
+############################
+
+.DS_Store
