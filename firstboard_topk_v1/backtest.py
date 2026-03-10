@@ -218,6 +218,9 @@ def simulate_backtest_t1_open(
     daily_pd["trade_date"] = daily_pd["trade_date"].astype(int)
     daily_pd = daily_pd.sort_values(["trade_date", "StockCode"], kind="stable").reset_index(drop=True)
 
+    # Pre-index by date to avoid scanning the full panel each day.
+    daily_by_date = {int(d): g.set_index("StockCode", drop=False) for d, g in daily_pd.groupby("trade_date", sort=False)}
+
     # Initialize portfolio state and output buffers.
     cash = float(config.initial_cash)
     holdings: dict[int, Position] = {}
@@ -232,15 +235,13 @@ def simulate_backtest_t1_open(
     for i, d in enumerate(trade_dates):
         # Resolve day-level fields for selling/buying and NAV marking.
         d_int = int(d)
-        day_slice = daily_pd.loc[daily_pd["trade_date"] == d_int]
-        day_by_code = {int(k): r for k, r in day_slice.set_index("StockCode").iterrows()}
+        day_df = daily_by_date[d_int]
 
         # Sell all holdings at today's open (these were bought on the previous day).
         if len(holdings) > 0:
             for stock_code, pos in list(holdings.items()):
                 # Resolve today's open price for selling.
-                day_row = day_by_code[int(stock_code)]
-                sell_px = float(day_row["open"]) * (1.0 - slip)
+                sell_px = float(day_df.at[int(stock_code), "open"]) * (1.0 - slip)
                 proceeds = float(pos.shares) * sell_px
                 fee = proceeds * sell_fee
                 cash += proceeds - fee
@@ -263,16 +264,26 @@ def simulate_backtest_t1_open(
 
         # Skip opening new positions on the last trade date to keep liquidation well-defined.
         if i < len(trade_dates) - 1:
+            # Resolve next-day open availability for T+1 open liquidation.
+            next_d_int = int(trade_dates[i + 1])
+            next_df = daily_by_date[next_d_int]
+
             # Execute daily Top-K buys at open for non-held names.
             day_topk = topk_by_date.get(d)
             if day_topk is not None and int(day_topk.shape[0]) > 0:
                 # Build a list of buy candidates that are not already held.
                 buy_rows = []
+                dropped_next_missing = 0
                 for _, row in day_topk.iterrows():
                     stock_code = int(row["StockCode"])
                     if stock_code in holdings:
                         continue
+                    if stock_code not in next_df.index:
+                        dropped_next_missing += 1
+                        continue
                     buy_rows.append(row)
+                if int(dropped_next_missing) > 0:
+                    print(f"[warn] {d_int} drop_missing_next_day n={int(dropped_next_missing)}")
 
                 # Allocate cash equally across new buys.
                 if len(buy_rows) > 0:
@@ -280,8 +291,7 @@ def simulate_backtest_t1_open(
                     for row in buy_rows:
                         # Resolve today's open price for buying.
                         stock_code = int(row["StockCode"])
-                        day_row = day_by_code[int(stock_code)]
-                        buy_px = float(day_row["open"]) * (1.0 + slip)
+                        buy_px = float(day_df.at[int(stock_code), "open"]) * (1.0 + slip)
                         shares = cash_per / (buy_px * (1.0 + buy_fee))
                         gross = float(shares) * buy_px
                         fee = gross * buy_fee
@@ -289,7 +299,7 @@ def simulate_backtest_t1_open(
 
                         holdings[int(stock_code)] = Position(
                             StockCode=int(stock_code),
-                            ts_code=str(day_row["ts_code"]),
+                            ts_code=str(day_df.at[int(stock_code), "ts_code"]),
                             shares=float(shares),
                             cost=float(buy_px),
                         )
@@ -297,7 +307,7 @@ def simulate_backtest_t1_open(
                             {
                                 "trade_date": d_int,
                                 "StockCode": int(stock_code),
-                                "ts_code": str(day_row["ts_code"]),
+                                "ts_code": str(day_df.at[int(stock_code), "ts_code"]),
                                 "side": "BUY",
                                 "minute_index": 0,
                                 "px": float(buy_px),
@@ -312,8 +322,7 @@ def simulate_backtest_t1_open(
         holdings_value = 0.0
         for stock_code, pos in holdings.items():
             # Resolve today's close price for marking.
-            day_row = day_by_code[int(stock_code)]
-            holdings_value += float(pos.shares) * float(day_row["close"])
+            holdings_value += float(pos.shares) * float(day_df.at[int(stock_code), "close"])
 
         nav = cash + holdings_value
         nav_rows.append(

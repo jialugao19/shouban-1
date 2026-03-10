@@ -7,6 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 
 
 def _compute_drawdown(nav: pd.Series) -> pd.Series:
@@ -172,6 +173,46 @@ def write_report(
     report_dir = Path(out_root) / "evaluation"
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_structured_evaluation(
+    out_root: str,
+    eval_kind: str,
+    run_meta: dict[str, object],
+    metrics: dict[str, float],
+    pick_summary: dict[str, object],
+    threshold_metrics: dict[str, float],
+    threshold_pick_summary: dict[str, object],
+    t0_metrics: dict[str, float],
+) -> None:
+    """Write structured YAML files under evaluation/ for regression checks."""
+    # Create the evaluation directory for structured outputs.
+    eval_dir = Path(out_root) / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write metrics.yaml for machine-readable comparisons.
+    metrics_obj = {
+        "baseline_t1_open": metrics,
+        "score_threshold_t1_open": threshold_metrics,
+        "baseline_t0_open_close": t0_metrics,
+    }
+    (eval_dir / "metrics.yaml").write_text(yaml.safe_dump(metrics_obj, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    # Write picks.yaml for coverage, concentration, and path mix checks.
+    picks_obj = {
+        "baseline": pick_summary,
+        "score_threshold": threshold_pick_summary,
+    }
+    (eval_dir / "picks.yaml").write_text(yaml.safe_dump(picks_obj, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    # Write status.yaml for quick pass/fail gating and basic metadata.
+    status_obj = {
+        "status": "ok",
+        "schema_version": 1,
+        "eval_kind": str(eval_kind),
+        "run_meta": dict(run_meta),
+    }
+    (eval_dir / "status.yaml").write_text(yaml.safe_dump(status_obj, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def plot_assets(out_root: str, nav_df: pd.DataFrame, pick_summary: dict[str, object], candidates_df: pd.DataFrame) -> None:

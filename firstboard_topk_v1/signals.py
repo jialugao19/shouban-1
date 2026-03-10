@@ -208,7 +208,22 @@ def build_day_signals(
     cand = cand.merge(auction_df, on="StockCode", how="left")
     missing_auction = cand["auction_vol"].isna().to_numpy()
     if bool(np.any(missing_auction)):
-        raise ValueError("missing auction_vol for some candidates at MinuteIndex==0")
+        # Drop candidates with missing auction bars so long runs can complete.
+        missing_n = int(np.sum(missing_auction))
+        print(f"[warn] {trade_date} drop_missing_auction_vol n={missing_n}")
+        cand = cand.loc[~missing_auction].reset_index(drop=True)
+        cand_codes = cand["StockCode"].astype(int).tolist()
+        if int(cand.shape[0]) == 0:
+            cand["trade_date"] = int(d)
+            cand["auction_vol_ratio"] = np.array([], dtype=float)
+            cand["amount_cny_prev"] = np.array([], dtype=float)
+            cand["limit_up_at_open"] = np.array([], dtype=bool)
+            cand["score_total"] = np.array([], dtype=float)
+            cand["score_path"] = np.array([], dtype=object)
+            topk = cand.head(0).copy()
+            topk["trade_date"] = int(d)
+            topk["rank"] = np.array([], dtype=int)
+            return DaySignals(candidates=cand, topk=topk, filtered_limit_up_at_open=0)
     cand["auction_vol"] = cand["auction_vol"].astype(float)
     cand["auction_vol_ratio"] = cand["auction_vol"].astype(float) / (cand["vol_prev"].astype(float) * 100.0)
 
@@ -227,10 +242,25 @@ def build_day_signals(
     cand = cand.merge(limit_quality, on="StockCode", how="left")
     missing_lq = cand["score_limit_quality"].isna().to_numpy()
     if bool(np.any(missing_lq)):
-        raise ValueError("missing limit-quality scores for some candidates")
+        # Drop candidates with missing limit-quality scores so downstream scoring stays consistent.
+        missing_n = int(np.sum(missing_lq))
+        print(f"[warn] {trade_date} drop_missing_limit_quality n={missing_n}")
+        cand = cand.loc[~missing_lq].reset_index(drop=True)
+        cand_codes = cand["StockCode"].astype(int).tolist()
+        if int(cand.shape[0]) == 0:
+            cand["trade_date"] = int(d)
+            cand["auction_vol_ratio"] = np.array([], dtype=float)
+            cand["amount_cny_prev"] = np.array([], dtype=float)
+            cand["limit_up_at_open"] = np.array([], dtype=bool)
+            cand["score_total"] = np.array([], dtype=float)
+            cand["score_path"] = np.array([], dtype=object)
+            topk = cand.head(0).copy()
+            topk["trade_date"] = int(d)
+            topk["rank"] = np.array([], dtype=int)
+            return DaySignals(candidates=cand, topk=topk, filtered_limit_up_at_open=0)
 
     # Compute shared features and shared scores.
-    cand["amount_cny_prev"] = amount_cny_prev.loc[union_mask].to_numpy(dtype=float)
+    cand["amount_cny_prev"] = cand["amount_prev"].astype(float) * 1000.0
     cand["avg_ret_prev"] = cand["vwap_prev"].astype(float) / cand["close_prev"].astype(float) - 1.0
     cand["avg_ret_sbgk"] = cand["vwap_prev"].astype(float) / cand["close_prev"].astype(float) * 1.1 - 1.0
     cand["rp60_prev"] = cand["rp_prev"].astype(float)

@@ -22,7 +22,7 @@ from shouban2.firstboard_topk_v1.config import (
     UpperShadowRange,
     VolShrinkageRange,
 )
-from shouban2.firstboard_topk_v1.evaluation import evaluate_nav, summarize_picks, top10_contribution, write_report
+from shouban2.firstboard_topk_v1.evaluation import evaluate_nav, summarize_picks, top10_contribution, write_report, write_structured_evaluation
 from shouban2.firstboard_topk_v1.features_daily import prepare_daily_panel
 from shouban2.firstboard_topk_v1.io_trade_dates import load_open_trade_dates, load_open_trade_dates_upto
 from shouban2.firstboard_topk_v1.run_2024 import _load_valid_by_date, _write_yaml
@@ -30,6 +30,7 @@ from shouban2.firstboard_topk_v1.signals import build_day_signals, select_topk_f
 
 
 BATCH_ID = "example_batch_id"
+TEST_ID = "031001"
 
 
 def _load_yaml(path: Path) -> object:
@@ -113,7 +114,7 @@ def _strategy_config_from_dict(data: dict[str, object]) -> StrategyConfig:
 def run() -> None:
     """Run a batch of experiments from a fixed spec.yaml path."""
     # Locate the batch root and spec.yaml under /data-cache.
-    batch_root = Path("/data-cache/shouban2/firstboard_topk_v1/experiments") / BATCH_ID
+    batch_root = Path("/data-cache/shouban2") / TEST_ID / "firstboard_topk_v1" / "experiments" / BATCH_ID
     spec_path = batch_root / "spec.yaml"
     spec = _load_yaml(spec_path)
 
@@ -272,6 +273,22 @@ def run() -> None:
             top10_df=top10_df,
             max_day_topk=max_day_topk,
             filtered_limit_up_count=filtered_limit_up_count,
+        )
+        write_structured_evaluation(
+            out_root=out_root,
+            eval_kind="backtest",
+            run_meta={
+                "test_id": TEST_ID,
+                "strategy": "firstboard_topk_v1",
+                "batch_id": BATCH_ID,
+                "exp_id": exp_id,
+                "date_range": {"start_date": cfg.start_date, "end_date": cfg.end_date},
+            },
+            metrics=metrics,
+            pick_summary=pick_summary,
+            threshold_metrics=threshold_metrics,
+            threshold_pick_summary=threshold_pick_summary,
+            t0_metrics=t0_metrics,
         )
 
         # Compute score quantile returns for the baseline Top-K (T+1 open, gross of allocation effects).

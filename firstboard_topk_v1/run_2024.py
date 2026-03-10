@@ -10,7 +10,6 @@ import pandas as pd
 import polars as pl
 import yaml
 
-from shouban2.firstboard_topk_v1.backtest import simulate_backtest
 from shouban2.firstboard_topk_v1.backtest import simulate_backtest_t1_open
 from shouban2.firstboard_topk_v1.config import (
     AuctionShapeSbdk,
@@ -25,7 +24,14 @@ from shouban2.firstboard_topk_v1.config import (
     UpperShadowRange,
     VolShrinkageRange,
 )
-from shouban2.firstboard_topk_v1.evaluation import evaluate_nav, plot_assets, summarize_picks, top10_contribution, write_report
+from shouban2.firstboard_topk_v1.evaluation import (
+    evaluate_nav,
+    plot_assets,
+    summarize_picks,
+    top10_contribution,
+    write_report,
+    write_structured_evaluation,
+)
 from shouban2.firstboard_topk_v1.features_daily import prepare_daily_panel
 from shouban2.firstboard_topk_v1.io_trade_dates import load_open_trade_dates, load_open_trade_dates_upto
 from shouban2.firstboard_topk_v1.signals import build_day_signals, select_topk_from_candidates
@@ -55,8 +61,8 @@ def _write_yaml(path: str, obj: object) -> None:
 
 def run() -> None:
     """Run a full-year 2024 backtest and write all artifacts under /data-cache."""
-    # Declare fixed run range for 2024.
-    start_date = "20240102"
+    # Declare fixed run range for 2021-2024.
+    start_date = "20210104"
     end_date = "20241231"
 
     # Declare data roots under /data.
@@ -67,8 +73,9 @@ def run() -> None:
 
     # Declare output root under /data-cache.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"firstboard_topk_v1_2024_{stamp}"
-    out_root = f"/data-cache/shouban2/firstboard_topk_v1/runs/{run_id}"
+    test_id = "031001"
+    run_id = f"firstboard_topk_v1_2021_2024_{stamp}"
+    out_root = f"/data-cache/shouban2/{test_id}/firstboard_topk_v1/runs/{run_id}"
 
     # Declare strategy configuration values (no implicit defaults).
     config = StrategyConfig(
@@ -249,6 +256,20 @@ def run() -> None:
         top10_df=top10_df,
         max_day_topk=max_day_topk,
         filtered_limit_up_count=filtered_limit_up_count,
+    )
+    write_structured_evaluation(
+        out_root=config.out_root,
+        eval_kind="backtest",
+        run_meta={
+            "test_id": test_id,
+            "strategy": "firstboard_topk_v1",
+            "date_range": {"start_date": start_date, "end_date": end_date},
+        },
+        metrics=metrics,
+        pick_summary=pick_summary,
+        threshold_metrics=threshold_metrics,
+        threshold_pick_summary=threshold_pick_summary,
+        t0_metrics=t0_metrics,
     )
 
     candidates_df = pd.concat([x.to_pandas() for x in all_candidates], ignore_index=True) if len(all_candidates) > 0 else pd.DataFrame()
