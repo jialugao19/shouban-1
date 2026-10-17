@@ -99,10 +99,19 @@ def _choose_topk(
     filter_limit_up_at_open: bool,
     score_threshold: float,
     dynamic_k_by_score: bool,
+    path_cap_sbdk: int,
+    path_cap_sbgk: int,
+    path_cap_rzg: int,
+    position_size_by_score: bool,
+    daily_gross_exposure_cap: float,
 ) -> tuple[pd.DataFrame, int]:
     """Select Top-K rows with an optional limit-up-at-open filter."""
+    # Declare path-level caps for the selection loop.
+    path_caps = {"sbdk": int(path_cap_sbdk), "sbgk": int(path_cap_sbgk), "rzg": int(path_cap_rzg)}
+
     # Walk ranked rows and pick the first K that pass the selection constraints.
     picked_rows: list[int] = []
+    path_counts = {"sbdk": 0, "sbgk": 0, "rzg": 0}
     filtered = 0
     for row_i, row in ranked.iterrows():
         # Apply score threshold only when dynamic-k mode is enabled.
@@ -111,7 +120,12 @@ def _choose_topk(
         if filter_limit_up_at_open and bool(row["limit_up_at_open"]):
             filtered += 1
             continue
+        score_path = str(row["score_path"])
+        path_cap = int(path_caps[score_path])
+        if path_cap > 0 and int(path_counts[score_path]) >= path_cap:
+            continue
         picked_rows.append(int(row_i))
+        path_counts[score_path] += 1
         if len(picked_rows) >= topk_k:
             break
 
@@ -119,6 +133,14 @@ def _choose_topk(
     out = ranked.loc[picked_rows].copy()
     out = out.reset_index(drop=True)
     out["rank"] = np.arange(1, int(out.shape[0]) + 1, dtype=int)
+    if int(out.shape[0]) > 0:
+        if position_size_by_score:
+            score_sum = float(out["score_total"].astype(float).sum())
+            out["position_weight"] = out["score_total"].astype(float) / score_sum * float(daily_gross_exposure_cap)
+        else:
+            out["position_weight"] = float(daily_gross_exposure_cap) / float(out.shape[0])
+    else:
+        out["position_weight"] = np.array([], dtype=float)
     return out, int(filtered)
 
 
@@ -190,11 +212,13 @@ def build_day_signals(
         cand["auction_vol_ratio"] = np.array([], dtype=float)
         cand["amount_cny_prev"] = np.array([], dtype=float)
         cand["limit_up_at_open"] = np.array([], dtype=bool)
+        cand["score_limit_quality"] = np.array([], dtype=float)
         cand["score_total"] = np.array([], dtype=float)
         cand["score_path"] = np.array([], dtype=object)
         topk = cand.head(0).copy()
         topk["trade_date"] = int(d)
         topk["rank"] = np.array([], dtype=int)
+        topk["position_weight"] = np.array([], dtype=float)
         return DaySignals(candidates=cand, topk=topk, filtered_limit_up_at_open=0)
 
     # Load auction volume ratio for candidates using minute index 0 on trade_date.
@@ -218,11 +242,13 @@ def build_day_signals(
             cand["auction_vol_ratio"] = np.array([], dtype=float)
             cand["amount_cny_prev"] = np.array([], dtype=float)
             cand["limit_up_at_open"] = np.array([], dtype=bool)
+            cand["score_limit_quality"] = np.array([], dtype=float)
             cand["score_total"] = np.array([], dtype=float)
             cand["score_path"] = np.array([], dtype=object)
             topk = cand.head(0).copy()
             topk["trade_date"] = int(d)
             topk["rank"] = np.array([], dtype=int)
+            topk["position_weight"] = np.array([], dtype=float)
             return DaySignals(candidates=cand, topk=topk, filtered_limit_up_at_open=0)
     cand["auction_vol"] = cand["auction_vol"].astype(float)
     cand["auction_vol_ratio"] = cand["auction_vol"].astype(float) / (cand["vol_prev"].astype(float) * 100.0)
@@ -252,11 +278,13 @@ def build_day_signals(
             cand["auction_vol_ratio"] = np.array([], dtype=float)
             cand["amount_cny_prev"] = np.array([], dtype=float)
             cand["limit_up_at_open"] = np.array([], dtype=bool)
+            cand["score_limit_quality"] = np.array([], dtype=float)
             cand["score_total"] = np.array([], dtype=float)
             cand["score_path"] = np.array([], dtype=object)
             topk = cand.head(0).copy()
             topk["trade_date"] = int(d)
             topk["rank"] = np.array([], dtype=int)
+            topk["position_weight"] = np.array([], dtype=float)
             return DaySignals(candidates=cand, topk=topk, filtered_limit_up_at_open=0)
 
     # Compute shared features and shared scores.
@@ -368,6 +396,11 @@ def build_day_signals(
         filter_limit_up_at_open=config.filter_limit_up_at_open,
         score_threshold=config.score_threshold,
         dynamic_k_by_score=config.dynamic_k_by_score,
+        path_cap_sbdk=config.path_cap_sbdk,
+        path_cap_sbgk=config.path_cap_sbgk,
+        path_cap_rzg=config.path_cap_rzg,
+        position_size_by_score=config.position_size_by_score,
+        daily_gross_exposure_cap=config.daily_gross_exposure_cap,
     )
 
     # Add bookkeeping columns for report-level attribution.
@@ -383,6 +416,11 @@ def select_topk_from_candidates(
     filter_limit_up_at_open: bool,
     score_threshold: float,
     dynamic_k_by_score: bool,
+    path_cap_sbdk: int,
+    path_cap_sbgk: int,
+    path_cap_rzg: int,
+    position_size_by_score: bool,
+    daily_gross_exposure_cap: float,
 ) -> tuple[pd.DataFrame, int]:
     """Select Top-K rows from a candidates table with the same ranking rule as build_day_signals."""
     # Rank candidates by the stable sorting rule.
@@ -395,4 +433,9 @@ def select_topk_from_candidates(
         filter_limit_up_at_open=filter_limit_up_at_open,
         score_threshold=score_threshold,
         dynamic_k_by_score=dynamic_k_by_score,
+        path_cap_sbdk=path_cap_sbdk,
+        path_cap_sbgk=path_cap_sbgk,
+        path_cap_rzg=path_cap_rzg,
+        position_size_by_score=position_size_by_score,
+        daily_gross_exposure_cap=daily_gross_exposure_cap,
     )

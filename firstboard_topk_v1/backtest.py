@@ -144,14 +144,16 @@ def simulate_backtest(
                     continue
                 buy_rows.append(row)
 
-            # Allocate cash equally across new buys.
+            # Allocate cash across new buys using the prepared position weights.
             if len(buy_rows) > 0:
-                cash_per = cash / float(len(buy_rows))
+                cash_start = float(cash)
                 for row in buy_rows:
                     stock_code = int(row["StockCode"])
+                    position_weight = float(row["position_weight"])
                     day_row = day_by_code[int(stock_code)]
                     buy_px = float(day_row["open"]) * (1.0 + slip)
-                    shares = cash_per / (buy_px * (1.0 + buy_fee))
+                    budget = cash_start * position_weight
+                    shares = budget / (buy_px * (1.0 + buy_fee))
                     gross = float(shares) * buy_px
                     fee = gross * buy_fee
                     cash -= gross + fee
@@ -285,14 +287,16 @@ def simulate_backtest_t1_open(
                 if int(dropped_next_missing) > 0:
                     print(f"[warn] {d_int} drop_missing_next_day n={int(dropped_next_missing)}")
 
-                # Allocate cash equally across new buys.
+                # Allocate cash across new buys using the prepared position weights.
                 if len(buy_rows) > 0:
-                    cash_per = cash / float(len(buy_rows))
+                    cash_start = float(cash)
                     for row in buy_rows:
                         # Resolve today's open price for buying.
                         stock_code = int(row["StockCode"])
+                        position_weight = float(row["position_weight"])
                         buy_px = float(day_df.at[int(stock_code), "open"]) * (1.0 + slip)
-                        shares = cash_per / (buy_px * (1.0 + buy_fee))
+                        budget = cash_start * position_weight
+                        shares = budget / (buy_px * (1.0 + buy_fee))
                         gross = float(shares) * buy_px
                         fee = gross * buy_fee
                         cash -= gross + fee

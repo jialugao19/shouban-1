@@ -58,6 +58,9 @@ class LimitQualityParams:
     """Hold limit-quality scoring parameters."""
 
     seal_time_norm: int
+    seal_duration_norm: int
+    reopen_count_norm: int
+    tail_minutes: int
     open_board_vol_norm: float
 
 
@@ -117,6 +120,11 @@ class StrategyConfig:
     score_threshold: float
     dynamic_k_by_score: bool
     filter_limit_up_at_open: bool
+    path_cap_sbdk: int
+    path_cap_sbgk: int
+    path_cap_rzg: int
+    position_size_by_score: bool
+    daily_gross_exposure_cap: float
 
     commission_bps: float
     stamp_duty_bps: float

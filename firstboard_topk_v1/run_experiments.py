@@ -23,6 +23,7 @@ from shouban2.firstboard_topk_v1.config import (
     VolShrinkageRange,
 )
 from shouban2.firstboard_topk_v1.evaluation import evaluate_nav, summarize_picks, top10_contribution, write_report, write_structured_evaluation
+from shouban2.firstboard_topk_v1.evaluation import summarize_limit_quality_groups
 from shouban2.firstboard_topk_v1.features_daily import prepare_daily_panel
 from shouban2.firstboard_topk_v1.io_trade_dates import load_open_trade_dates, load_open_trade_dates_upto
 from shouban2.firstboard_topk_v1.run_2024 import _load_valid_by_date, _write_yaml
@@ -91,6 +92,11 @@ def _strategy_config_from_dict(data: dict[str, object]) -> StrategyConfig:
         score_threshold=float(data["score_threshold"]),
         dynamic_k_by_score=bool(data["dynamic_k_by_score"]),
         filter_limit_up_at_open=bool(data["filter_limit_up_at_open"]),
+        path_cap_sbdk=int(data["path_cap_sbdk"]),
+        path_cap_sbgk=int(data["path_cap_sbgk"]),
+        path_cap_rzg=int(data["path_cap_rzg"]),
+        position_size_by_score=bool(data["position_size_by_score"]),
+        daily_gross_exposure_cap=float(data["daily_gross_exposure_cap"]),
         commission_bps=float(data["commission_bps"]),
         stamp_duty_bps=float(data["stamp_duty_bps"]),
         slippage_bps=float(data["slippage_bps"]),
@@ -171,6 +177,7 @@ def run() -> None:
 
         topk_pd_by_date: dict[str, pd.DataFrame] = {}
         topk_threshold_pd_by_date: dict[str, pd.DataFrame] = {}
+        all_candidates: list[pd.DataFrame] = []
         filtered_limit_up_count = 0
         for d in trade_dates_eval:
             # Resolve prev_date from the full trade date list.
@@ -185,6 +192,7 @@ def run() -> None:
 
             filtered_limit_up_count += int(out.filtered_limit_up_at_open)
             topk_pd_by_date[d] = out.topk
+            all_candidates.append(out.candidates[["trade_date", "StockCode", "open", "score_total", "score_limit_quality"]].copy())
 
             # Build a thresholded Top-K for report-level comparisons (do not persist).
             topk_threshold, _ = select_topk_from_candidates(
@@ -193,6 +201,11 @@ def run() -> None:
                 filter_limit_up_at_open=cfg.filter_limit_up_at_open,
                 score_threshold=cfg.score_threshold,
                 dynamic_k_by_score=True,
+                path_cap_sbdk=cfg.path_cap_sbdk,
+                path_cap_sbgk=cfg.path_cap_sbgk,
+                path_cap_rzg=cfg.path_cap_rzg,
+                position_size_by_score=cfg.position_size_by_score,
+                daily_gross_exposure_cap=cfg.daily_gross_exposure_cap,
             )
             topk_threshold_pd_by_date[d] = topk_threshold
 
@@ -239,6 +252,22 @@ def run() -> None:
         t0_nav_df = pd.DataFrame(t0_rows)
         t0_metrics = evaluate_nav(t0_nav_df)
 
+        # Build day-open lookup tables for cross-sectional diagnostics.
+        daily_open_pd = daily_panel.select(["StockCode", "trade_date", "open"]).to_pandas()
+        daily_open_pd["StockCode"] = daily_open_pd["StockCode"].astype(int)
+        daily_open_pd["trade_date"] = daily_open_pd["trade_date"].astype(int)
+        daily_open_pd = daily_open_pd.sort_values(["trade_date", "StockCode"], kind="stable").reset_index(drop=True)
+        day_open_by_date = {int(d): g.set_index("StockCode")["open"] for d, g in daily_open_pd.groupby("trade_date", sort=False)}
+        candidates_eval_df = pd.concat(all_candidates, ignore_index=True)
+        limit_quality_groups = summarize_limit_quality_groups(
+            candidates_df=candidates_eval_df,
+            day_open_by_date=day_open_by_date,
+            trade_dates=trade_dates_eval,
+            commission_bps=cfg.commission_bps,
+            stamp_duty_bps=cfg.stamp_duty_bps,
+            slippage_bps=cfg.slippage_bps,
+        )
+
         # Compute threshold Top-K metrics for comparisons.
         threshold_bt_root = Path("/tmp") / "shouban2_firstboard_topk_v1_threshold_tmp"
         threshold_bt_root.mkdir(parents=True, exist_ok=True)
@@ -261,7 +290,20 @@ def run() -> None:
         top10_df = top10_contribution(nav_df)
         max_day = str(pick_summary["max_day"])
         max_day_topk = topk_pd_by_date[max_day][
-            ["StockCode", "ts_code", "score_total", "score_path", "auction_vol_ratio", "amount_cny_prev", "limit_up_at_open"]
+            [
+                "StockCode",
+                "ts_code",
+                "score_total",
+                "score_path",
+                "position_weight",
+                "score_limit_quality",
+                "sealed_minutes_total",
+                "open_board_count_post_first_seal",
+                "tail_seal_flag",
+                "auction_vol_ratio",
+                "amount_cny_prev",
+                "limit_up_at_open",
+            ]
         ].copy()
         write_report(
             out_root=out_root,
@@ -270,6 +312,7 @@ def run() -> None:
             threshold_metrics=threshold_metrics,
             threshold_pick_summary=threshold_pick_summary,
             t0_metrics=t0_metrics,
+            limit_quality_groups=limit_quality_groups,
             top10_df=top10_df,
             max_day_topk=max_day_topk,
             filtered_limit_up_count=filtered_limit_up_count,
@@ -289,6 +332,7 @@ def run() -> None:
             threshold_metrics=threshold_metrics,
             threshold_pick_summary=threshold_pick_summary,
             t0_metrics=t0_metrics,
+            limit_quality_groups=limit_quality_groups,
         )
 
         # Compute score quantile returns for the baseline Top-K (T+1 open, gross of allocation effects).
@@ -338,11 +382,13 @@ def run() -> None:
                 "coverage": float(pick_summary["coverage"]),
                 "nonempty_days": int(pick_summary["nonempty_days"]),
                 "avg_picks": float(pick_summary["avg_picks"]),
+                "avg_gross_exposure": float(pick_summary["avg_gross_exposure"]),
                 "p99_day_picks": int(pick_summary["p99_day_picks"]),
                 "max_day_picks": int(pick_summary["max_day_picks"]),
                 "max_day": str(pick_summary["max_day"]),
                 "filtered_limit_up_at_open": int(filtered_limit_up_count),
                 "path_mix": dict(pick_summary["path_mix"]),
+                "limit_quality_groups": limit_quality_groups,
                 "score_quantile_ret": score_quantile_ret,
             }
         )

@@ -1,4 +1,4 @@
-"""Run firstboard_topk_v1 for the full year 2024 and write outputs to /data-cache."""
+"""Run firstboard_topk_v1 for 2021-2024 and write outputs to /data-cache."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from shouban2.firstboard_topk_v1.evaluation import (
     evaluate_nav,
     plot_assets,
     summarize_picks,
+    summarize_limit_quality_groups,
     top10_contribution,
     write_report,
     write_structured_evaluation,
@@ -60,7 +61,7 @@ def _write_yaml(path: str, obj: object) -> None:
 
 
 def run() -> None:
-    """Run a full-year 2024 backtest and write all artifacts under /data-cache."""
+    """Run a 2021-2024 backtest and write all artifacts under /data-cache."""
     # Declare fixed run range for 2021-2024.
     start_date = "20210104"
     end_date = "20241231"
@@ -91,8 +92,13 @@ def run() -> None:
         ma5_lookback=5,
         topk_k=5,
         score_threshold=0.55,
-        dynamic_k_by_score=False,
+        dynamic_k_by_score=True,
         filter_limit_up_at_open=True,
+        path_cap_sbdk=0,
+        path_cap_sbgk=2,
+        path_cap_rzg=0,
+        position_size_by_score=True,
+        daily_gross_exposure_cap=0.8,
         commission_bps=3.0,
         stamp_duty_bps=10.0,
         slippage_bps=5.0,
@@ -106,7 +112,13 @@ def run() -> None:
         strength_rzg=StrengthRange(r0=-0.04, r1=0.06),
         upper_shadow_range=UpperShadowRange(s0=0.2, s1=0.6),
         vol_shrinkage_range=VolShrinkageRange(width=0.4),
-        limit_quality_params=LimitQualityParams(seal_time_norm=60, open_board_vol_norm=0.2),
+        limit_quality_params=LimitQualityParams(
+            seal_time_norm=60,
+            seal_duration_norm=120,
+            reopen_count_norm=4,
+            tail_minutes=30,
+            open_board_vol_norm=0.2,
+        ),
         weights_sbdk=SbdkWeights(w_open_band=0.25, w_auction=0.25, w_liquidity=0.15, w_rp=0.15, w_limit_quality=0.20),
         weights_sbgk=SbgkWeights(w_open_band=0.20, w_auction=0.25, w_liquidity=0.15, w_strength=0.20, w_limit_quality=0.20),
         weights_rzg=RzgWeights(w_open_band=0.15, w_auction=0.20, w_liquidity=0.10, w_strength=0.15, w_reversal=0.20, w_limit_quality=0.20),
@@ -144,7 +156,7 @@ def run() -> None:
     topk_pd_by_date: dict[str, object] = {}
     topk_threshold_pd_by_date: dict[str, object] = {}
     filtered_limit_up_count = 0
-    all_candidates: list[pl.DataFrame] = []
+    all_candidates: list[pd.DataFrame] = []
 
     pos_by_date = {d: i for i, d in enumerate(trade_dates_all)}
     for i, d in enumerate(trade_dates_eval):
@@ -161,7 +173,7 @@ def run() -> None:
 
         # Maintain aggregated objects for evaluation.
         filtered_limit_up_count += int(out.filtered_limit_up_at_open)
-        all_candidates.append(pl.from_pandas(out.candidates[["score_total"]]))
+        all_candidates.append(out.candidates[["trade_date", "StockCode", "open", "score_total", "score_limit_quality"]].copy())
 
         # Keep topk mapping for backtest.
         topk_pd_by_date[d] = out.topk
@@ -173,6 +185,11 @@ def run() -> None:
             filter_limit_up_at_open=config.filter_limit_up_at_open,
             score_threshold=config.score_threshold,
             dynamic_k_by_score=True,
+            path_cap_sbdk=config.path_cap_sbdk,
+            path_cap_sbgk=config.path_cap_sbgk,
+            path_cap_rzg=config.path_cap_rzg,
+            position_size_by_score=config.position_size_by_score,
+            daily_gross_exposure_cap=config.daily_gross_exposure_cap,
         )
         topk_threshold_pd_by_date[d] = topk_threshold
 
@@ -225,6 +242,22 @@ def run() -> None:
     t0_nav_df = pd.DataFrame(t0_rows)
     t0_metrics = evaluate_nav(t0_nav_df)
 
+    # Build day-open lookup tables for cross-sectional diagnostics.
+    daily_open_pd = daily_panel.select(["StockCode", "trade_date", "open"]).to_pandas()
+    daily_open_pd["StockCode"] = daily_open_pd["StockCode"].astype(int)
+    daily_open_pd["trade_date"] = daily_open_pd["trade_date"].astype(int)
+    daily_open_pd = daily_open_pd.sort_values(["trade_date", "StockCode"], kind="stable").reset_index(drop=True)
+    day_open_by_date = {int(d): g.set_index("StockCode")["open"] for d, g in daily_open_pd.groupby("trade_date", sort=False)}
+    candidates_eval_df = pd.concat(all_candidates, ignore_index=True)
+    limit_quality_groups = summarize_limit_quality_groups(
+        candidates_df=candidates_eval_df,
+        day_open_by_date=day_open_by_date,
+        trade_dates=trade_dates_eval,
+        commission_bps=config.commission_bps,
+        stamp_duty_bps=config.stamp_duty_bps,
+        slippage_bps=config.slippage_bps,
+    )
+
     # Compute threshold Top-K metrics for comparisons.
     threshold_nav_df, _ = simulate_backtest_t1_open(
         config=config,
@@ -243,7 +276,20 @@ def run() -> None:
     top10_df = top10_contribution(nav_df)
     max_day = str(pick_summary["max_day"])
     max_day_topk = topk_pd_by_date[max_day][
-        ["StockCode", "ts_code", "score_total", "score_path", "auction_vol_ratio", "amount_cny_prev", "limit_up_at_open"]
+        [
+            "StockCode",
+            "ts_code",
+            "score_total",
+            "score_path",
+            "position_weight",
+            "score_limit_quality",
+            "sealed_minutes_total",
+            "open_board_count_post_first_seal",
+            "tail_seal_flag",
+            "auction_vol_ratio",
+            "amount_cny_prev",
+            "limit_up_at_open",
+        ]
     ].copy()
 
     write_report(
@@ -253,6 +299,7 @@ def run() -> None:
         threshold_metrics=threshold_metrics,
         threshold_pick_summary=threshold_pick_summary,
         t0_metrics=t0_metrics,
+        limit_quality_groups=limit_quality_groups,
         top10_df=top10_df,
         max_day_topk=max_day_topk,
         filtered_limit_up_count=filtered_limit_up_count,
@@ -270,9 +317,10 @@ def run() -> None:
         threshold_metrics=threshold_metrics,
         threshold_pick_summary=threshold_pick_summary,
         t0_metrics=t0_metrics,
+        limit_quality_groups=limit_quality_groups,
     )
 
-    candidates_df = pd.concat([x.to_pandas() for x in all_candidates], ignore_index=True) if len(all_candidates) > 0 else pd.DataFrame()
+    candidates_df = pd.concat(all_candidates, ignore_index=True) if len(all_candidates) > 0 else pd.DataFrame()
     plot_assets(config.out_root, nav_df, pick_summary, candidates_df)
 
     print(f"[done] out_root={config.out_root}")
