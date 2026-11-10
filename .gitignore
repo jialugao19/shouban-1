@@ -62,3 +62,6 @@ __pycache__/
 ############################
 
 .DS_Store
+
+conversations.md
+*.pid
